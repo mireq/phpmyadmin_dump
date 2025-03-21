@@ -134,8 +134,6 @@ def save_file(response, output_dir, filename):
 	with open(candidate, 'wb') as f:
 		for chunk in response.iter_content(chunk_size=8192):
 			f.write(chunk)
-			sys.stdout.write('.')
-			sys.stdout.flush()
 
 	return candidate  # Optional: return the final saved path
 
@@ -159,20 +157,32 @@ def export_database(session, args, database, token):
 	export_form = doc.xpath('//form[@name="dump"]')[0]
 	form_data = {}
 	for form_input in export_form.xpath('.//input'):
-		if form_input.get('name') is not None and form_input.get('value') is not None:
-			#if form_input.get('name').startswith('aliases['):
-			#	continue
+		field_name = form_input.get('name')
+		if field_name is not None and form_input.get('value') is not None:
+			if form_input.get('name').startswith('aliases['):
+				continue
 			form_type = form_input.get('type')
 			if form_type == 'radio' and form_input.get('checked') is None:
 				continue
 			if form_type == 'checkbox' and form_input.get('checked') is None:
 				continue
-			form_data.setdefault(form_input.get('name'), form_input.get('value'))
+			if field_name in form_data:
+				if not isinstance(form_data[field_name], list):
+					form_data[field_name] = [form_data[field_name]]
+				form_data[field_name].append(form_input.get('value'))
+			else:
+				form_data[field_name] = form_input.get('value')
 	for form_input in export_form.xpath('.//select'):
+		field_name = form_input.get('name')
 		if form_input.get('name') is not None:
 			for option in form_input.xpath('.//option'):
 				if option.get('selected') is not None:
-					form_data[form_input.get('name')] = option.get('value')
+					if field_name in form_data:
+						if not isinstance(form_data[field_name], list):
+							form_data[field_name] = [form_data[field_name]]
+						form_data[field_name].append(option.get('value'))
+					else:
+						form_data[field_name] = option.get('value')
 
 	export_url = urljoin(args.url, 'export.php')
 	response = session.post(
@@ -188,7 +198,6 @@ def export_database(session, args, database, token):
 	if not content_disposition:
 		raise DumpError("Database dump failed")
 
-	# get filename, it can be quoted
 	filename = re.search(r'filename="(.*)"', content_disposition).group(1)
 
 	output_dir = Path(args.output_dir).resolve()
