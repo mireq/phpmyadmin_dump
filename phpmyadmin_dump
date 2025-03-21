@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+import argparse
+import requests
+from urllib.parse import urljoin, quote
+import sys
+from lxml import html
+
+
+class DumpError(RuntimeError):
+	pass
+
+
+def is_login_successful(doc):
+	return len(doc.xpath('//form[@name="login_form"]')) == 0
+
+
+def main():
+	parser = argparse.ArgumentParser(description="This is a simple script to dump a database from phpmyadmin")
+	parser.add_argument('url', help="The url of the phpmyadmin page")
+	parser.add_argument('username', help="The username of the database")
+	parser.add_argument('password', help="The password of the database")
+	parser.add_argument('--timeout', default=60, type=int, help="Request timeout")
+	parser.add_argument('--databases', nargs='*', help="List of databases to dump")
+
+	args = parser.parse_args()
+
+	headers = {
+		'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+		'Accept-Encoding': 'gzip, deflate',
+		'Accept-Language': 'en-US,en;q=0.9',
+		'Cache-Control': 'no-cache',
+		'Connection': 'keep-alive',
+		'Pragma': 'no-cache',
+		'Upgrade-Insecure-Requests': '1',
+	}
+
+	session = requests.Session()
+
+	response = session.get(
+		args.url,
+		headers=headers,
+		verify=False,
+		timeout=args.timeout
+	)
+	response.raise_for_status()
+	doc = html.fromstring(response.content)
+	login_form = doc.xpath('//form[@name="login_form"]')[0]
+	form_data = {
+		'pma_username': args.username,
+		'pma_password': args.password,
+	}
+	for form_input in login_form.xpath('.//input'):
+		if form_input.get('name') is not None and form_input.get('value') is not None:
+			form_data.setdefault(form_input.get('name'), form_input.get('value'))
+	token = form_data['token']
+
+	response = session.post(
+		args.url,
+		headers=headers,
+		data=form_data,
+		verify=False,
+		timeout=args.timeout
+	)
+	response.raise_for_status()
+	doc = html.fromstring(response.content)
+
+	if not is_login_successful(doc):
+		raise DumpError("Bad username or password")
+
+	export_url = urljoin(args.url, 'server_export.php')
+	export_kwargs = {
+		'db': '',
+		'token': token,
+	}
+	export_url += '?' + '&'.join(f'{k}={quote(v, safe="")}' for k, v in export_kwargs.items())
+
+	response = session.get(
+		export_url,
+		headers=headers,
+		verify=False,
+		timeout=args.timeout
+	)
+	response.raise_for_status()
+	doc = html.fromstring(response.content)
+
+	databases = []
+	export_form = doc.xpath('//form[@name="dump"]')[0]
+	form_data = {}
+	for form_input in export_form.xpath('.//input'):
+		if form_input.get('name') is not None and form_input.get('value') is not None:
+			if form_input.get('name').startswith('aliases['):
+				continue
+			form_type = form_input.get('type')
+			if form_type == 'radio' and form_input.get('checked') is None:
+				continue
+			if form_type == 'checkbox' and form_input.get('checked') is None:
+				continue
+			form_data.setdefault(form_input.get('name'), form_input.get('value'))
+	for form_input in export_form.xpath('.//select'):
+		if form_input.get('name') is not None:
+			for option in form_input.xpath('.//option'):
+				if option.get('selected') is not None:
+					form_data[form_input.get('name')] = option.get('value')
+
+	form_input = export_form.xpath('.//select[@name="db_select[]"]')[0]
+	for db in form_input.xpath('.//option'):
+		databases.append(db.get('value'))
+
+	if args.databases:
+		databases = args.databases
+	form_data['db_select[]'] = databases
+
+	export_url = urljoin(args.url, 'export.php')
+	response = session.post(
+		export_url,
+		headers=headers,
+		data=form_data,
+		verify=False,
+		stream=True,
+	)
+	print(response.headers)
+
+
+if __name__ == "__main__":
+	try:
+		main()
+	except DumpError as e:
+		sys.stderr.write(str(e) + '\n')
+		sys.exit(1)
