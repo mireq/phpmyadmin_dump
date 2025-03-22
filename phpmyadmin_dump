@@ -37,6 +37,7 @@ def main():
 	parser.add_argument('--databases', nargs='*', help="List of databases to dump")
 	parser.add_argument('--output_dir', help="Output directory")
 	parser.add_argument('--output', help="Output file for single database")
+	parser.add_argument('--progress', action='store_true', help="Show progress bar")
 
 	args = parser.parse_args()
 
@@ -110,7 +111,20 @@ def main():
 		export_database(session, args, database, token)
 
 
-def save_unique_file(response, output_dir, filename):
+def read_file(fp, response, progress):
+	if progress:
+		from tqdm import tqdm
+		total_size = int(response.headers.get('content-length', 0))
+		with tqdm(total=total_size, unit='B', unit_scale=True, desc='Downloading') as pbar:
+			for chunk in response.iter_content(chunk_size=8192):
+				fp.write(chunk)
+				pbar.update(len(chunk))
+	else:
+		for chunk in response.iter_content(chunk_size=8192):
+			fp.write(chunk)
+
+
+def save_unique_file(response, output_dir, filename, progress):
 	# Sanitize filename
 	filename = filename.replace('\\', '/').split('/')[-1]
 	filename = filename.lstrip('.')
@@ -140,18 +154,16 @@ def save_unique_file(response, output_dir, filename):
 
 	# Save the file
 	with open(candidate, 'wb') as f:
-		for chunk in response.iter_content(chunk_size=8192):
-			f.write(chunk)
+		read_file(f, response, progress)
 
 	return candidate  # Optional: return the final saved path
 
 
-def save_file(response, filename):
+def save_file(response, filename, progress):
 	path = Path(filename)
 	path.parent.mkdir(parents=True, exist_ok=True)
-	with open(path, 'wb') as f:
-		for chunk in response.iter_content(chunk_size=8192):
-			f.write(chunk)
+	with open(path, 'wb') as fp:
+		read_file(fp, response, progress)
 
 
 def export_database(session, args, database, token):
@@ -219,9 +231,9 @@ def export_database(session, args, database, token):
 
 		output_dir = Path(args.output_dir or '.').resolve()
 		output_dir.mkdir(parents=True, exist_ok=True)
-		save_unique_file(response, output_dir, filename)
+		save_unique_file(response, output_dir, filename, args.progress)
 	else:
-		save_file(response, args.output)
+		save_file(response, args.output, args.progress)
 
 
 if __name__ == "__main__":
