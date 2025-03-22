@@ -35,10 +35,18 @@ def main():
 	parser.add_argument('password', help="The password of the database")
 	parser.add_argument('--timeout', default=60, type=int, help="Request timeout")
 	parser.add_argument('--databases', nargs='*', help="List of databases to dump")
-	parser.add_argument('--output_dir', default='.', help="Output directory")
+	parser.add_argument('--output_dir', help="Output directory")
+	parser.add_argument('--output', help="Output file for single database")
 
 	args = parser.parse_args()
 
+	if args.output is not None:
+		if args.output_dir is not None:
+			raise DumpError("Cannot specify both --output and --output_dir")
+		if len(args.databases) > 1:
+			raise DumpError("Cannot specify --output for multiple databases")
+		if len(args.databases) == 0:
+			raise DumpError("Cannot specify --output without specifying databases")
 
 	session = requests.Session()
 
@@ -102,7 +110,7 @@ def main():
 		export_database(session, args, database, token)
 
 
-def save_file(response, output_dir, filename):
+def save_unique_file(response, output_dir, filename):
 	# Sanitize filename
 	filename = filename.replace('\\', '/').split('/')[-1]
 	filename = filename.lstrip('.')
@@ -136,6 +144,14 @@ def save_file(response, output_dir, filename):
 			f.write(chunk)
 
 	return candidate  # Optional: return the final saved path
+
+
+def save_file(response, filename):
+	path = Path(filename)
+	path.parent.mkdir(parents=True, exist_ok=True)
+	with open(path, 'wb') as f:
+		for chunk in response.iter_content(chunk_size=8192):
+			f.write(chunk)
 
 
 def export_database(session, args, database, token):
@@ -198,11 +214,14 @@ def export_database(session, args, database, token):
 	if not content_disposition:
 		raise DumpError("Database dump failed")
 
-	filename = re.search(r'filename="(.*)"', content_disposition).group(1)
+	if args.output is None:
+		filename = re.search(r'filename="(.*)"', content_disposition).group(1)
 
-	output_dir = Path(args.output_dir).resolve()
-	output_dir.mkdir(parents=True, exist_ok=True)
-	save_file(response, output_dir, filename)
+		output_dir = Path(args.output_dir or '.').resolve()
+		output_dir.mkdir(parents=True, exist_ok=True)
+		save_unique_file(response, output_dir, filename)
+	else:
+		save_file(response, args.output)
 
 
 if __name__ == "__main__":
